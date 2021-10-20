@@ -19,6 +19,7 @@ from prometheus_client import (
     Counter,
     start_http_server,
 )
+from prometheus_client.utils import INF
 import pymysql.cursors
 
 
@@ -42,6 +43,7 @@ table_rows_copy_duration = Histogram(
     "migration_job_batch_copy_duration_seconds",
     "seconds taken to copy batch of rows",
     labelnames=["table", "batch_size"],
+    buckets=(5, 10, 15, 30, 60, 120, 300, 600, INF)
 )
 
 
