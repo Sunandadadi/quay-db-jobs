@@ -1,9 +1,12 @@
 import argparse
+import concurrent.futures
 import logging
 import random
 import re
+
 from functools import partial
-from threading import Event
+from multiprocessing.pool import ThreadPool
+from threading import Event, Thread
 
 from bintrees import RBTree
 
@@ -229,9 +232,7 @@ def yield_random_entries(
                         break
 
                 completed_through = candidate[primary_key_field] + 1
-                logger.info(
-                    "Marking id range as completed: %s-%s", start_index, completed_through
-                )
+                logger.info("Marking id range as completed: %s-%s", start_index, completed_through)
                 allocator.mark_completed(start_index, completed_through)
 
     except NoAvailableKeysError:
@@ -393,15 +394,16 @@ def main():
     table_copy_parser.add_argument("--skip-validation", type=bool, default=False)
     table_copy_parser.add_argument("--check-new-table-empty", type=bool, default=False)
     table_copy_parser.add_argument("--metrics", type=bool, default=True)
+    table_copy_parser.add_argument("-j", type=int, default=4)
+
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVELS[args.log_level])
     if args.metrics:
         start_http_server(9090)
 
+    # # Some basic checks first
     conn = connect(args.host, int(args.port), args.user, args.password, args.db)
-
-    # Some basic checks
     with conn:
         assert set(get_table_column_names(conn, args.old_table)).issubset(
             set(get_table_column_names(conn, args.new_table))
@@ -409,9 +411,27 @@ def main():
         if args.check_new_table_empty:
             assert check_table_empty(conn, args.new_table)
 
-        perform_backfill(
-            conn, args.old_table, args.new_table, args.pk, args.chunk_size, args.skip_validation
-        )
+    # Connection objects are not thread-safe, so one needed per thread
+    db_connections = [
+        connect(args.host, int(args.port), args.user, args.password, args.db) for x in range(args.j)
+    ]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.j) as executor:
+        future_to_conn = {
+            executor.submit(
+                perform_backfill,
+                conn,
+                args.old_table,
+                args.new_table,
+                args.pk,
+                args.chunk_size,
+                args.skip_validation,
+            ): conn
+            for conn in db_connections
+        }
+        for future in concurrent.futures.as_completed(future_to_conn):
+            future.result()
+            future_to_conn[future].close()
 
 
 if __name__ == "__main__":
