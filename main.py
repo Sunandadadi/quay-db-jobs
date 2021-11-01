@@ -34,6 +34,10 @@ LOG_LEVELS = {
 }
 
 
+class DatabaseConnectionError(Exception):
+    pass
+
+
 # Metrics
 table_rows_copied = Counter(
     "migration_job_table_rows_copied", "number of table rows copied", labelnames=["table"]
@@ -57,16 +61,26 @@ def valid_identifier(identifier):
 
 # Actual backfill script
 def connect(host, port, user, password, database, cursorclass=pymysql.cursors.DictCursor):
-    """Not thread-safe."""
-    return pymysql.connect(
-        host=host,
-        port=port,
-        user=user,
-        password=password,
-        database=database,
-        ssl={"fake_flag_to_enable_tls": True},  # Blankly trust any certs, or add the RDS one
-        cursorclass=cursorclass,
-    )
+    try:
+        """Not thread-safe."""
+        return pymysql.connect(
+            host=host,
+            port=int(port),
+            user=user,
+            password=password,
+            database=database,
+            ssl={"fake_flag_to_enable_tls": True},  # Blankly trust any certs, or add the RDS one
+            cursorclass=cursorclass,
+        )
+    except:
+        raise DatabaseConnectionError(
+            "Unable to connect to database: (%s:%s, %s, %s, %s)",
+            host,
+            port,
+            user,
+            password,
+            database,
+        )
 
 
 def get_table_column_names(conn, tablename):
@@ -238,40 +252,11 @@ def perform_backfill(
         start_index, end_index = end_index, end_index + batch_size
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-log",
-        "--log-level",
-        default="warning",
-        choices=["critical", "error", "warn", "warning", "info", "debug"],
-    )
-
-    subparsers = parser.add_subparsers()
-    table_copy_parser = subparsers.add_parser(
-        "table_copy", help="Copy existing table over a new empty table"
-    )
-    table_copy_parser.add_argument("host")
-    table_copy_parser.add_argument("port")
-    table_copy_parser.add_argument("db")
-    table_copy_parser.add_argument("user")
-    table_copy_parser.add_argument("password")
-    table_copy_parser.add_argument("old_table")
-    table_copy_parser.add_argument("new_table")
-    table_copy_parser.add_argument("--pk", type=str, default="id")
-    table_copy_parser.add_argument("--chunk-size", type=int, default=1000)
-    table_copy_parser.add_argument("--skip-validation", type=bool, default=False)
-    table_copy_parser.add_argument("--check-new-table-empty", type=bool, default=False)
-    table_copy_parser.add_argument("--metrics", type=bool, default=True)
-    table_copy_parser.add_argument("--min_start_id", type=int, default=-1)
-
-    args = parser.parse_args()
-
-    logging.basicConfig(level=LOG_LEVELS[args.log_level])
+def _table_copy(args):
     if args.metrics:
         start_http_server(9090)
 
-    conn = connect(args.host, int(args.port), args.user, args.password, args.db)
+    conn = connect(args.host, args.port, args.user, args.password, args.db)
     with conn:
         assert set(get_table_column_names(conn, args.old_table)).issubset(
             set(get_table_column_names(conn, args.new_table))
@@ -288,6 +273,113 @@ def main():
             skip_validation=args.skip_validation,
             min_start_id=args.min_start_id,
         )
+
+
+def _enable_users(args, enable=True):
+    users = args.users
+    if not users:
+        logger.warning("No users update")
+        return
+
+    conn = connect(args.host, args.port, args.user, args.password, args.db)
+    with conn:
+        with conn.cursor() as cursor:
+            sql = """UPDATE user
+            SET enabled = %s
+            WHERE username IN (%s)
+            """ % (
+                enable,
+                ",".join(f"'{u}'" for u in args.users))
+            cursor.execute(sql)
+
+            result = cursor.fetchone()
+            logger.info(
+                "Users %s: %s",
+                "enabled" if enable else "disabled",
+                args.users
+            )
+
+        conn.commit()
+
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="subcommand")
+
+    table_copy_parser = subparsers.add_parser(
+        "table_copy", help="Copy existing table over a new empty table"
+    )
+    table_copy_parser.add_argument("old_table")
+    table_copy_parser.add_argument("new_table")
+
+    table_copy_parser.add_argument("-H", "--host")
+    table_copy_parser.add_argument("-p", "--port")
+    table_copy_parser.add_argument("-D", "--db")
+    table_copy_parser.add_argument("-u", "--user")
+    table_copy_parser.add_argument("-P", "--password")
+    table_copy_parser.add_argument(
+        "-l",
+        "--log-level",
+        default="warning",
+        choices=["critical", "error", "warn", "warning", "info", "debug"],
+    )
+
+    table_copy_parser.add_argument("--pk", type=str, default="id")
+    table_copy_parser.add_argument("--chunk-size", type=int, default=1000)
+    table_copy_parser.add_argument("--skip-validation", type=bool, default=False)
+    table_copy_parser.add_argument("--check-new-table-empty", type=bool, default=False)
+    table_copy_parser.add_argument("--metrics", type=bool, default=True)
+    table_copy_parser.add_argument("--min_start_id", type=int, default=-1)
+    table_copy_parser.set_defaults(func=_table_copy)
+
+    enable_users_parser = subparsers.add_parser(
+        "enable_users", help="Enable user(s)"
+    )
+
+    enable_users_parser.add_argument("--users", nargs="+", type=str)
+    enable_users_parser.add_argument("-H", "--host")
+    enable_users_parser.add_argument("-p", "--port")
+    enable_users_parser.add_argument("-D", "--db")
+    enable_users_parser.add_argument("-u", "--user")
+    enable_users_parser.add_argument("-P", "--password")
+    enable_users_parser.add_argument(
+        "-l",
+        "--log-level",
+        default="warning",
+        choices=["critical", "error", "warn", "warning", "info", "debug"],
+    )
+
+    disable_users_parser = subparsers.add_parser(
+        "disable_users", help="Disable user(s)"
+    )
+
+    disable_users_parser.add_argument("--users", nargs="+", type=str)
+    disable_users_parser.add_argument("-H", "--host")
+    disable_users_parser.add_argument("-p", "--port")
+    disable_users_parser.add_argument("-D", "--db")
+    disable_users_parser.add_argument("-u", "--user")
+    disable_users_parser.add_argument("-P", "--password")
+    disable_users_parser.add_argument(
+        "-l",
+        "--log-level",
+        default="warning",
+        choices=["critical", "error", "warn", "warning", "info", "debug"],
+    )
+
+    args = parser.parse_args()
+
+    logging.basicConfig(level=LOG_LEVELS[args.log_level])
+
+    if args.subcommand == "table_copy":
+        _table_copy(args)
+    elif args.subcommand == "enable_users":
+        _enable_users(args, enable=True)
+    elif args.subcommand == "disable_users":
+        _enable_users(args, enable=False)
+    else:
+        raise Exception("Unknown subcommand: %s", args.subcommand)
 
 
 if __name__ == "__main__":
