@@ -47,7 +47,7 @@ table_rows_copy_duration = Histogram(
     "migration_job_batch_copy_duration_seconds",
     "seconds taken to copy batch of rows",
     labelnames=["table", "batch_size"],
-    buckets=(5, 10, 15, 30, 60, 120, 300, 600, INF)
+    buckets=(5, 10, 15, 30, 60, 120, 300, 600, INF),
 )
 
 
@@ -278,30 +278,83 @@ def _table_copy(args):
 def _enable_users(args, enable=True):
     users = args.users
     if not users:
-        logger.warning("No users update")
+        logger.warning("No users to update")
         return
 
     conn = connect(args.host, args.port, args.user, args.password, args.db)
+
     with conn:
-        with conn.cursor() as cursor:
-            sql = """UPDATE user
-            SET enabled = %s
-            WHERE username IN (%s)
-            """ % (
-                enable,
-                ",".join(f"'{u}'" for u in args.users))
-            cursor.execute(sql)
+        for user in args.users:
+            logger.info("Disabling user '%s", user)
 
-            result = cursor.fetchone()
-            logger.info(
-                "Users %s: %s",
-                "enabled" if enable else "disabled",
-                args.users
-            )
+            with conn.cursor() as cursor:
+                sql = """UPDATE user
+                SET enabled = {}
+                WHERE username = %s
+                """.format(
+                    enable
+                )
+                result = cursor.execute(sql, user)
 
-        conn.commit()
+            conn.commit()
 
-    return result
+            if result:
+                logger.info("User '%s': %s", user, "enabled" if enable else "disabled")
+            else:
+                logger.warning("User '%s' already %s", user, "enabled" if enable else "disabled")
+                return
+
+            # Removes remaining users' resources after disabling users
+            if not enable:
+                with conn.cursor() as cursor:
+                    repo_ids_sql = """
+                    SELECT repository.id FROM repository
+                    JOIN user ON repository.namespace_user_id = user.id
+                    WHERE user.username = %s
+                    """
+                    cursor.execute(repo_ids_sql, user)
+                    result = cursor.fetchall()
+                    repo_ids = [d["id"] for d in result]
+
+                    if not repo_ids:
+                        logger.warning("Nothing to delete for user '%s'", user)
+                        return
+
+                    del_repo_builds_sql = """
+                    DELETE FROM repositorybuild
+                    WHERE repository_id IN %s
+                    """
+                    builds_deleted = cursor.execute(del_repo_builds_sql, [repo_ids])
+
+                    del_repo_triggers_sql = """
+                    DELETE FROM repositorybuildtrigger
+                    WHERE repository_id IN %s
+                    """
+                    triggers_deleted = cursor.execute(del_repo_triggers_sql, [repo_ids])
+
+                    del_repo_mirrors_sql = """
+                    DELETE FROM repomirrorconfig
+                    WHERE repository_id IN %s
+                    """
+                    mirrors_deleted = cursor.execute(del_repo_mirrors_sql, [repo_ids])
+
+                    del_build_queue_sql = """
+                    DELETE FROM queueitem
+                    WHERE queue_name LIKE %s
+                    """
+                    queue_prefix = "%s/%s/%%" % ("dockerfilebuild", user)
+                    queueitems_deleted = cursor.execute(del_build_queue_sql, queue_prefix)
+
+                conn.commit()
+
+                logger.info(
+                    "Deleted %s builds, %s triggers, %s mirrors, %s queueitems for user '%s'",
+                    builds_deleted,
+                    triggers_deleted,
+                    mirrors_deleted,
+                    queueitems_deleted,
+                    user,
+                )
 
 
 def main():
@@ -334,9 +387,7 @@ def main():
     table_copy_parser.add_argument("--min_start_id", type=int, default=-1)
     table_copy_parser.set_defaults(func=_table_copy)
 
-    enable_users_parser = subparsers.add_parser(
-        "enable_users", help="Enable user(s)"
-    )
+    enable_users_parser = subparsers.add_parser("enable_users", help="Enable user(s)")
 
     enable_users_parser.add_argument("--users", nargs="+", type=str)
     enable_users_parser.add_argument("-H", "--host")
@@ -351,9 +402,7 @@ def main():
         choices=["critical", "error", "warn", "warning", "info", "debug"],
     )
 
-    disable_users_parser = subparsers.add_parser(
-        "disable_users", help="Disable user(s)"
-    )
+    disable_users_parser = subparsers.add_parser("disable_users", help="Disable user(s)")
 
     disable_users_parser.add_argument("--users", nargs="+", type=str)
     disable_users_parser.add_argument("-H", "--host")
