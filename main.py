@@ -1,15 +1,11 @@
 import argparse
-import concurrent.futures
 import logging
+import os
 import random
 import re
 import time
 
-from functools import partial
-from multiprocessing.pool import ThreadPool
-from threading import Event, Thread
-
-from bintrees import RBTree
+from urllib.parse import unquote
 
 from prometheus_client import (
     push_to_gateway,
@@ -64,11 +60,11 @@ def connect(host, port, user, password, database, cursorclass=pymysql.cursors.Di
     try:
         """Not thread-safe."""
         return pymysql.connect(
-            host=host,
-            port=int(port),
-            user=user,
-            password=password,
-            database=database,
+            host=host or os.environ.get('DB_HOST'),
+            port=int(port) or 3306,
+            user=user or os.environ.get('DB_USER'),
+            password=password or unquote(os.environ.get('DB_PASSWORD')),
+            database=database or os.environ.get('DB_NAME'),
             ssl={"fake_flag_to_enable_tls": True},  # Blankly trust any certs, or add the RDS one
             cursorclass=cursorclass,
         )
@@ -361,24 +357,26 @@ def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="subcommand")
 
-    table_copy_parser = subparsers.add_parser(
-        "table_copy", help="Copy existing table over a new empty table"
-    )
-    table_copy_parser.add_argument("old_table")
-    table_copy_parser.add_argument("new_table")
-
-    table_copy_parser.add_argument("-H", "--host")
-    table_copy_parser.add_argument("-p", "--port")
-    table_copy_parser.add_argument("-D", "--db")
-    table_copy_parser.add_argument("-u", "--user")
-    table_copy_parser.add_argument("-P", "--password")
-    table_copy_parser.add_argument(
+    db_parser = argparse.ArgumentParser(add_help=False)
+    db_parser.add_argument("-H", "--host")
+    db_parser.add_argument("-p", "--port")
+    db_parser.add_argument("-D", "--db")
+    db_parser.add_argument("-u", "--user")
+    db_parser.add_argument("-P", "--password")
+    db_parser.add_argument(
         "-l",
         "--log-level",
         default="warning",
         choices=["critical", "error", "warn", "warning", "info", "debug"],
     )
 
+    table_copy_parser = subparsers.add_parser(
+        "table_copy",
+        help="Copy existing table over a new empty table",
+        parents=[db_parser],
+    )
+    table_copy_parser.add_argument("old_table")
+    table_copy_parser.add_argument("new_table")
     table_copy_parser.add_argument("--pk", type=str, default="id")
     table_copy_parser.add_argument("--chunk-size", type=int, default=1000)
     table_copy_parser.add_argument("--skip-validation", type=bool, default=False)
@@ -387,39 +385,24 @@ def main():
     table_copy_parser.add_argument("--min_start_id", type=int, default=-1)
     table_copy_parser.set_defaults(func=_table_copy)
 
-    enable_users_parser = subparsers.add_parser("enable_users", help="Enable user(s)")
-
+    enable_users_parser = subparsers.add_parser(
+        "enable_users",
+        help="Enable user(s)",
+        parents=[db_parser],
+    )
     enable_users_parser.add_argument("--users", nargs="+", type=str)
-    enable_users_parser.add_argument("-H", "--host")
-    enable_users_parser.add_argument("-p", "--port")
-    enable_users_parser.add_argument("-D", "--db")
-    enable_users_parser.add_argument("-u", "--user")
-    enable_users_parser.add_argument("-P", "--password")
-    enable_users_parser.add_argument(
-        "-l",
-        "--log-level",
-        default="warning",
-        choices=["critical", "error", "warn", "warning", "info", "debug"],
+
+    disable_users_parser = subparsers.add_parser(
+        "disable_users",
+        help="Disable user(s)",
+        parents=[db_parser]
     )
-
-    disable_users_parser = subparsers.add_parser("disable_users", help="Disable user(s)")
-
     disable_users_parser.add_argument("--users", nargs="+", type=str)
-    disable_users_parser.add_argument("-H", "--host")
-    disable_users_parser.add_argument("-p", "--port")
-    disable_users_parser.add_argument("-D", "--db")
-    disable_users_parser.add_argument("-u", "--user")
-    disable_users_parser.add_argument("-P", "--password")
-    disable_users_parser.add_argument(
-        "-l",
-        "--log-level",
-        default="warning",
-        choices=["critical", "error", "warn", "warning", "info", "debug"],
-    )
 
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVELS[args.log_level])
+    print(args)
 
     if args.subcommand == "table_copy":
         _table_copy(args)
