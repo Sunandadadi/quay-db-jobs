@@ -281,7 +281,15 @@ def _enable_users(args, enable=True):
 
     with conn:
         for user in args.users:
-            logger.info("Disabling user '%s", user)
+            logger.info("%s user '%s'", ("Enabling" if enable else "Disabling"), user)
+
+            with conn.cursor() as cursor:
+                sql = """SELECT id FROM user where username = %s"""
+                user_id = cursor.execute(sql, user)
+
+            if not user_id:
+                logger.warning("User '%s' does not exist", user)
+                continue
 
             with conn.cursor() as cursor:
                 sql = """UPDATE user
@@ -295,10 +303,10 @@ def _enable_users(args, enable=True):
             conn.commit()
 
             if result:
-                logger.info("User '%s': %s", user, "enabled" if enable else "disabled")
+                logger.info("User '%s' %s", user, "enabled" if enable else "disabled")
             else:
                 logger.warning("User '%s' already %s", user, "enabled" if enable else "disabled")
-                return
+                continue
 
             # Removes remaining users' resources after disabling users
             if not enable:
