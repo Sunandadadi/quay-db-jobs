@@ -61,7 +61,7 @@ def connect(host, port, user, password, database, cursorclass=pymysql.cursors.Di
         """Not thread-safe."""
         return pymysql.connect(
             host=host or os.environ.get('DB_HOST'),
-            port=int(port) or 3306,
+            port=int(port) if port is not None else 3306,
             user=user or os.environ.get('DB_USER'),
             password=password or unquote(os.environ.get('DB_PASSWORD')),
             database=database or os.environ.get('DB_NAME'),
