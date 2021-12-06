@@ -56,6 +56,9 @@ objects:
               memory: 128Mi
           args:
           - ${SUBCOMMAND}
+          - "--log"
+          - "debug"
+          - "--users"
           - ${ARGS}
           env:
           - name: DB_HOST
