@@ -361,6 +361,107 @@ def _enable_users(args, enable=True):
                 )
 
 
+def _service_tool_db_user(args):
+    conn = connect(args.host, args.port, args.user, args.password, args.db)
+    db_user = args.service_tool_db_user
+
+    with conn:
+        with conn.cursor() as cursor:
+
+            # CRUD operations on messages table (used in banner.py)
+            messages_sql = """
+                                GRANT SELECT, INSERT, UPDATE (content, severity), DELETE
+                                ON {}.messages
+                                TO '{}'@'{}';
+                            """.format(
+                                args.db, db_user, args.host
+                            )
+            messages_result = cursor.execute(messages_sql)
+
+            # selecting id from mediatype table (used in banner.py)
+            mediatype_sql = """
+                                    GRANT SELECT (id)
+                                    ON {}.mediatype
+                                    TO '{}'@'{}';
+                                """.format(
+                                    args.db, db_user, args.host
+                                )
+            mediatype_result = cursor.execute(mediatype_sql)
+
+            # selecting from and updating on user table (used in username.py, user.py)
+            user_sql = """
+                            GRANT SELECT, UPDATE (username, enabled)
+                            ON {}.user
+                            TO '{}'@'{}';
+                        """.format(
+                            args.db, db_user, args.host
+                        )
+            user_result = cursor.execute(user_sql)
+
+            # Selecting from repository table (used in user.py)
+            repository_sql = """
+                                    GRANT SELECT (id)
+                                    ON {}.repository
+                                    TO '{}'@'{}';
+                                """.format(
+                                    args.db, db_user, args.host
+                                )
+            repository_result = cursor.execute(repository_sql)
+
+            # Deleting from repositorybuild table (used in user.py)
+            repositorybuild_sql = """
+                                        GRANT DELETE
+                                        ON {}.repositorybuild
+                                        TO '{}'@'{}';
+                                    """.format(
+                                        args.db, db_user, args.host
+                                    )
+            repositorybuild_result = cursor.execute(repositorybuild_sql)
+
+            # Deleting from repositorybuildtrigger table (used in user.py)
+            repositorybuildtrigger_sql = """
+                                                GRANT DELETE
+                                                ON {}.repositorybuildtrigger
+                                                TO '{}'@'{}';
+                                            """.format(
+                                                args.db, db_user, args.host
+                                            )
+            repositorybuildtrigger_result = cursor.execute(repositorybuildtrigger_sql)
+
+            # Deleting from repomirrorconfig table (used in user.py)
+            repomirrorconfig_sql = """
+                                        GRANT DELETE
+                                        ON {}.repomirrorconfig
+                                        TO '{}'@'{}';
+                                    """.format(
+                                        args.db, db_user, args.host
+                                    )
+            repomirrorconfig_result = cursor.execute(repomirrorconfig_sql)
+
+            # Deleting from queueitem table (used in user.py)
+            queueitem_sql = """
+                                    GRANT DELETE
+                                    ON {}.queueitem
+                                    TO '{}'@'{}';
+                                """.format(
+                                    args.db, db_user, args.host
+                                )
+            queueitem_result = cursor.execute(queueitem_sql)
+
+        conn.commit()
+        logger.info(
+            "Grant queries executed for tables: messages %s, mediatype %s, user %s, repository %s, repositorybuild %s, repositorybuildtrigger %s, repomirrorconfig %s, queueitem_result %s",
+            messages_result,
+            mediatype_result,
+            user_result,
+            repository_result,
+            repositorybuild_result,
+            repositorybuildtrigger_result,
+            repomirrorconfig_result,
+            queueitem_result
+        )
+
+
 def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="subcommand")
@@ -418,6 +519,8 @@ def main():
         _enable_users(args, enable=True)
     elif args.subcommand == "disable_users":
         _enable_users(args, enable=False)
+    elif args.subcommand == "service_tool_db_user":
+        _service_tool_db_user(args)
     else:
         raise Exception("Unknown subcommand: %s", args.subcommand)
 
