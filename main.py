@@ -361,10 +361,13 @@ def _enable_users(args, enable=True):
                 )
 
 
-def _service_tool_db_user(args):
-    conn = connect(args.host, args.port, args.user, args.password, args.db)
-    db_user = args.service_tool_db_user
+def _grant_user_service_tool_permission(args):
+    if not args.service_tool_db_user:
+        logger.warning("No db-user provided to grant access")
+        return
 
+    db_user = args.service_tool_db_user[0]
+    conn = connect(args.host, args.port, args.user, args.password, args.db)
     with conn:
         with conn.cursor() as cursor:
 
@@ -508,6 +511,13 @@ def main():
     )
     disable_users_parser.add_argument("--users", nargs="+", type=str)
 
+    grant_user_service_tool_permission = subparsers.add_parser(
+        "grant_user_service_tool_permission",
+        help="Grant user service tool permissions",
+        parents=[db_parser]
+    )
+    grant_user_service_tool_permission.add_argument("--service_tool_db_user", nargs=1, type=str)
+
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVELS[args.log_level])
@@ -519,8 +529,8 @@ def main():
         _enable_users(args, enable=True)
     elif args.subcommand == "disable_users":
         _enable_users(args, enable=False)
-    elif args.subcommand == "service_tool_db_user":
-        _service_tool_db_user(args)
+    elif args.subcommand == "grant_user_service_tool_permission":
+        _grant_user_service_tool_permission(args)
     else:
         raise Exception("Unknown subcommand: %s", args.subcommand)
 
